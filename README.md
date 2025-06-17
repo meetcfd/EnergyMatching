@@ -89,7 +89,7 @@ Conditional sampling:
 ```bash
 python experiments/proteins/sampling_latent.py
 ```
-The VAE used for the continuous latent space is already provided.
+The VAE used for the continuous latent space and the dataset is already provided. 
 
 
 
