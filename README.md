@@ -1,9 +1,6 @@
 # Energy Matching
-<img src="media/EM_2D.png" alt="Energy Matching Illustration"
-     style="float:right; width:50%; max-width:300px; height:auto; margin: 0 0 10px 20px;" />
-<p>
+<img align="right" src="media/EM_2D.png" width="250" alt="Energy Matching Illustration" />
 Energy Matching unifies flow matching and energy-based models in a single time-independent scalar field, enabling efficient transport between the source and target distributions while retaining explicit likelihood information for flexible, high-quality generation.
-</p>
 
 **Version 0.1** – This is the official repository for the paper [Energy Matching](https://arxiv.org/abs/2504.10612).
 
