@@ -11,3 +11,5 @@ tqdm
 einops
 torchmetrics
 torchsde
+python-Levenshtein
+omegaconf

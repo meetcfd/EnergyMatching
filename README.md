@@ -76,7 +76,6 @@ python experiments/cifar10/fid_cifar_heun_1gpu.py \
 Pretrained CIFAR-10 checkpoints are available at [Hugging Face](https://huggingface.co/m1balcerak/energy_matching_cifar10).
 Use `cifar10_warm_up_145000.pt` for the warm-up phase and `cifar10_main_training_147000.pt` after the main training. The latter obtains an **FID of 3.3** at around `T=3.25`.
 ### Protein inverse design
-This task requires a two additional Python packages that are not included by default. Please install [```Levenshtein```](https://pypi.org/project/python-Levenshtein/) and [```OmegaConf```](https://pypi.org/project/omegaconf/) before training and sampling.
 Train the model with:
 ```bash
 python experiments/proteins/train_proteins.py \
