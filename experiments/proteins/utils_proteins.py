@@ -3,6 +3,9 @@ import torch
 from torch.utils.data import DataLoader, Dataset
 import numpy as np
 from collections import Counter
+from absl import flags, logging
+
+FLAGS = flags.FLAGS
 
 class Encoder(object):
     """convert between strings and their one-hot representations"""
@@ -59,50 +62,7 @@ class ProteinDataset(Dataset):
         df = df.sort_values(by='score', ascending=False)
 
         self.df = df 
-        if scenario == "gfp":
-            self.DMS_score_min, self.DMS_score_max = 1.2834, 4.1231
-        elif scenario == "aav": 
-            self.DMS_score_min, self.DMS_score_max = 0.0, 19.5365
-
-        self.tokenizer = tokenizer
-        self.seq_len = seq_len
-
-    def __len__(self):
-        return len(self.df)
-    
-    def normalize_fitness(self, score, min_val, max_val):
-        # normalize fitness values to [0,1]
-        return (score - min_val) / (max_val - min_val)
-
-    def filter_tokens(self, embeddings):
-        # given embeddings of (1,seq_len,33) -> (1,seq_len,24)
-        embeddings = embeddings[:, :, self.valid_ids]
-        return embeddings 
-
-    def __getitem__(self, idx):
-        row = self.df.iloc[idx]
-        input_seq = self.tokenizer.encode(row['sequence'])
-        if input_seq.shape[0] == 237:
-            input_seq = F.pad(input_seq, (0, 3), "constant", 0)
-
-        # one hot encoding 
-        input_seq = F.one_hot(input_seq, num_classes=20).float()
-
-        # Add the label to the inputs dictionary
-        DMS_score = self.normalize_fitness(row['score'], self.DMS_score_min, self.DMS_score_max) 
-        DMS_score = torch.tensor(DMS_score, dtype=torch.float32)
-        
-        return input_seq, DMS_score
-
-class ProteinDatasetOrig(Dataset):
-    def __init__(self, df, scenario, task, tokenizer, seq_len):
-        df = df.sort_values(by='score', ascending=False)
-
-        self.df = df 
-        if scenario == "gfp":
-            self.DMS_score_min, self.DMS_score_max = 1.2834, 4.1231
-        elif scenario == "aav": 
-            self.DMS_score_min, self.DMS_score_max = 0.0, 19.5365
+        self.DMS_score_min, self.DMS_score_max = 0.0, 19.5365
 
         self.tokenizer = tokenizer
         self.seq_len = seq_len
@@ -125,3 +85,27 @@ class ProteinDatasetOrig(Dataset):
         DMS_score = torch.tensor(DMS_score, dtype=torch.float32)
         
         return input_seq, DMS_score
+
+def plot_epsilon(t, at_data=False):
+    """
+    A piecewise function for epsilon(t) in the *plotting* SDE:
+      - 0 for t < FLAGS.time_cutoff
+      - linearly from 0..epsilon_max as t goes from FLAGS.time_cutoff..1.0
+      - constant epsilon_max for t >= 1.0
+
+    If at_data is True, always return epsilon_max (ignore time).
+    """
+    eps_max = FLAGS.epsilon_max
+    cutoff = FLAGS.time_cutoff
+
+    # If at_data is True, always return eps_max
+    if at_data:
+        return eps_max
+
+    if t < cutoff:
+        return 0.0
+    elif t < 1.0:
+        frac = (t - cutoff) / (1.0 - cutoff)  # goes from 0..1
+        return frac * eps_max
+    else:
+        return eps_max
