@@ -13,3 +13,4 @@ torchmetrics
 torchsde
 python-Levenshtein
 omegaconf
+torch-fidelity
