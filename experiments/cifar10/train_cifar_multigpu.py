@@ -1,8 +1,3 @@
-##############################################################################
-# train_vit.py
-# Now includes a --split_negative flag which controls if negative samples
-# are 50/50 split between real and noise initialization or all noise.
-##############################################################################
 import os
 import sys
 import time
