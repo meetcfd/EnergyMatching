@@ -62,7 +62,7 @@ torchrun --nproc_per_node=4 experiments/cifar10/train_cifar_multigpu.py \
     --same_temperature_scheduler True \
     --save_step 100
 ```
-Evaluation across trajectories at times `T=1.0` to `T=5.0`:
+Evaluation FID across trajectories at times `T=1.0` to `T=5.0`:
 ```bash
 python experiments/cifar10/fid_cifar_heun_1gpu.py \
     --resume_ckpt=/PATH/TO/main_training_checkpoint.pt \
@@ -75,6 +75,22 @@ python experiments/cifar10/fid_cifar_heun_1gpu.py \
 ```
 Pretrained CIFAR-10 checkpoints are available at [Hugging Face](https://huggingface.co/m1balcerak/energy_matching_cifar10).
 Use `cifar10_warm_up_145000.pt` for the warm-up phase and `cifar10_main_training_147000.pt` after the main training. The latter obtains an **FID of 3.3** at around `T=3.25`.
+
+To generate CIFAR-10 images using unconditional Langevin Monte Carlo sampling from the trained Energy Matching model, run:
+
+```bash
+python experiments/cifar10/sample_cifar_heun_1gpu.py \
+    --resume_ckpt=/PATH/TO/main_training_checkpoint.pt \
+    --batch_size=128 \
+    --t_end=3.25 \
+    --dt_gibbs=0.01 \
+    --use_ema=True \
+    --epsilon_max=0.01 \
+    --time_cutoff=1.0
+```
+Here, `t_end` corresponds to the sampling time $\tau_s$.
+
+
 ### Protein inverse design
 Train the model with:
 ```bash
