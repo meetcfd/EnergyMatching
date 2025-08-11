@@ -8,8 +8,9 @@ from torch.utils.tensorboard import SummaryWriter
 from torchcfm.conditional_flow_matching import ExactOptimalTransportConditionalFlowMatcher
 from experiments.toy2d.utils_2D_new import flow_weight_schedule, gibbs_sampler, velocity_training, get_batch
 from physics_flow_matching.multi_fidelity.synthetic import dataset
+import random
 
-def restart_func(restart_epoch, path, model, optimizer, sched=None):
+def restart_func(restart_epoch, path, model, optimizer, sched=None, buffer_sampler=None):
     assert restart_epoch != None, "restart epoch not initialized!"
     print(f"Loading state from checkpoint epoch : {restart_epoch}")
     state_dict = torch.load(f'{path}/checkpoint_{restart_epoch}.pth')
@@ -23,9 +24,55 @@ def restart_func(restart_epoch, path, model, optimizer, sched=None):
     start_epoch = restart_epoch + 1
     
     if 'sched_state_dict' in state_dict.keys() and state_dict['sched_state_dict'] is not None:
-        sched.load_state_dict(state_dict['sched_state_dict']) 
+        sched.load_state_dict(state_dict['sched_state_dict'])
         
-    return start_epoch, model, optimizer, sched
+    if 'buffer_state_dict' in state_dict.keys() and state_dict['buffer_state_dict'] is not None:
+        buffer_sampler.load(state_dict['buffer_state_dict'])
+        
+    return start_epoch, model, optimizer, sched, buffer_sampler
+
+class SampleBuffer:
+    def __init__(self, max_samples=10000):
+        self.max_samples = max_samples
+        self.buffer = []
+
+    def __len__(self):
+        return len(self.buffer)
+    
+    def load(self, old_buffer : list):
+        self.buffer = old_buffer
+
+    def push(self, samples):
+        samples = samples.detach().to('cpu')
+
+        for sample in samples:
+            self.buffer.append((sample.detach()))
+
+            if len(self.buffer) > self.max_samples:
+                self.buffer.pop(0)
+
+    def get(self, n_samples, device='cuda'):
+        items = random.choices(self.buffer, k=n_samples)
+        samples = items
+        samples = torch.stack(samples, 0)
+        samples = samples.to(device)
+
+        return samples
+
+
+def sample_buffer(buffer : SampleBuffer, batch_size=128, p=0.95, device='cuda'):
+    if len(buffer) < 1:
+        return torch.randn(batch_size, 2, device=device), torch.zeros(batch_size, device=device)
+        
+    n_replay = (np.random.rand(batch_size) < p).sum()
+
+    replay_sample = buffer.get(n_replay)
+    replay_time = torch.ones(n_replay, device=device)
+    random_sample = torch.randn(batch_size - n_replay, 2, device=device)
+    random_time = torch.zeros(batch_size - n_replay, device=device)
+    
+    return torch.cat([replay_sample, random_sample], 0), torch.cat([replay_time, random_time], 0)
+
 
 def train(
     model : nn.Module,
@@ -33,12 +80,14 @@ def train(
     dataloader : DataLoader,
     optimizer : optim.Optimizer,
     FM : ExactOptimalTransportConditionalFlowMatcher,
+    buffer_sampler : SampleBuffer,
     device: torch.device,
     batch_size: int,
     epochs_phase1: int,
     epochs_phase2: int,
     flow_weight: float,
     ebm_weight: float,
+    norm_weight: float,
     save_dir: str,
     tau_star: float,
     epsilon_max: float,
@@ -48,7 +97,7 @@ def train(
     writer: SummaryWriter,
     restart: bool = False,
     restart_epoch: int = None,
-    sched=None
+    sched=None,
 ) -> nn.Module:
     """
     Train the model with both OT Flow and EBM terms. Optionally
@@ -56,7 +105,7 @@ def train(
     using ``use_flow_weighting``.
     """
     if restart:
-        start_epoch, model, optimizer, sched = restart_func(restart_epoch, save_dir, model, optimizer, sched)
+        start_epoch, model, optimizer, sched, buffer_sampler = restart_func(restart_epoch, save_dir, model, optimizer, sched, buffer_sampler)
     else:
         print("Training the model from scratch")
         start_epoch = 0
@@ -87,12 +136,13 @@ def train(
         writer.add_scalar('Phase1/FlowLoss', total_loss/iteration, i)
         
         if (i + 1) % interval_p1 == 0 or i == epochs_phase1 - 1:
-            pct = int((i + 1) / epochs_phase1 * 100)
-            print(f"Phase 1: {pct}% done (Loss: {loss_flow.item():.4f})")
+            pct = int((i + 1) / (epochs_phase2 + epochs_phase1) * 100)
+            print(f"Phase 1: {pct}% done (Loss: {total_loss/iteration:.4f})")
             torch.save({
                 'model_state_dict': model.state_dict(),
                 'optimizer_state_dict': optimizer.state_dict(),
                 'sched_state_dict': sched.state_dict() if sched else None,
+                'buffer_state_dict' : None,
             }, f'{save_dir}/checkpoint_{i + 1}.pth')
     # --------------------------------
     # Phase 2: EBM + Flow
@@ -104,10 +154,12 @@ def train(
         total_total_loss = 0.0
         total_flow_loss = 0.0
         total_ebm_loss = 0.0
+        total_norm_loss = 0.0
+        
         iteration = 0
-        for x0, x_prior_init, x1, x_data, x_data_init in dataloader:
+        for x0, x1, x_data in dataloader:
             optimizer.zero_grad()
-            x0, x_prior_init, x1, x_data, x_data_init =  x0.to(device), x_prior_init[:batch_size//2].to(device), x1.to(device), x_data.to(device), x_data_init[:batch_size//2].to(device)
+            x0, x1, x_data =  x0.to(device), x1.to(device), x_data.to(device)
           
             # Flow portion
             t_flow, x_t_flow, u_t_flow = get_batch(FM, x0, x1)
@@ -125,12 +177,7 @@ def train(
             Epos = model(torch.tensor(1.0, device=device), x_data).mean()
 
             # Negative samples are generated via gibbs_sampler
-            half_bs = batch_size // 2
-            x_init_neg = torch.cat([x_data_init, x_prior_init], dim=0)
-            t_start = torch.cat(
-                [torch.ones(half_bs, device=device), torch.zeros(half_bs, device=device)],
-                dim=0
-            )
+            x_init_neg, t_start = sample_buffer(buffer_sampler, batch_size=batch_size)
 
             x_neg = gibbs_sampler(
                 model,
@@ -144,25 +191,32 @@ def train(
             Eneg = model(torch.tensor(1.0, device=device), x_neg).mean()
 
             loss_ebm = Epos - Eneg
-            loss = flow_weight * loss_flow + ebm_weight * loss_ebm
+            loss_norm = (Epos**2 + Eneg**2)
+            loss = flow_weight * loss_flow + ebm_weight * loss_ebm + norm_weight * loss_norm
             loss.backward()
             optimizer.step()
             total_total_loss += loss.item()
             total_flow_loss += loss_flow.item()
             total_ebm_loss += loss_ebm.item()
+            total_norm_loss += loss_norm.item()
             iteration += 1
+            
+            buffer_sampler.push(x_neg)
             
         writer.add_scalar('Phase2/Total_loss', total_total_loss/iteration, i)
         writer.add_scalar('Phase2/Flow_loss', total_flow_loss/iteration, i)
         writer.add_scalar('Phase2/EBM_loss', total_ebm_loss/iteration, i)
+        writer.add_scalar('Phase2/Norm_loss', total_norm_loss/iteration, i)
+
         
         if (i + 1) % interval_p2 == 0 or i == epochs_phase2 - 1:
-            pct = int((i + 1) / epochs_phase2 * 100)
-            print(f"Phase 2: {pct}% done (Total Loss: {loss.item():.4f}, Flow: {loss_flow.item():.4f}, EBM: {loss_ebm.item():.4f})")
+            pct = int((i + 1) / (epochs_phase2 + epochs_phase1) * 100)
+            print(f"Phase 2: {pct}% done (Total Loss: {total_total_loss/iteration:.4f}, Flow: {total_flow_loss/iteration:.4f}, EBM: {total_ebm_loss/iteration:.4f}, Norm: {total_norm_loss/iteration:.4f})")
             torch.save({
                 'model_state_dict': model.state_dict(),
                 'optimizer_state_dict': optimizer.state_dict(),
                 'sched_state_dict': sched.state_dict() if sched else None,
+                'buffer_state_dict' : buffer_sampler.buffer if buffer_sampler else None,
             }, f'{save_dir}/checkpoint_{i + 1}.pth')
 
     print(f"\nTraining complete!")
