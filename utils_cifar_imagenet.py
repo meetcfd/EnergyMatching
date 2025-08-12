@@ -14,6 +14,10 @@ from datetime import datetime
 from torchdyn.core import NeuralODE
 # from torchvision.transforms import ToPILImage  # (commented out if not used)
 from torchvision.utils import make_grid
+from torch.utils.data import Dataset
+import numpy as np
+from torchcfm.conditional_flow_matching import ExactOptimalTransportConditionalFlowMatcher, FlowMatcher, RectifiedFlow, ConditionalFlowMatcher
+from typing import Union
 
 FLAGS = flags.FLAGS
 
@@ -95,6 +99,7 @@ def save_pos_neg_grids(
 
 def gibbs_sampling_time_sweep(
     x_init: torch.Tensor,
+    y,
     model,
     at_data_mask: torch.Tensor,
     n_steps: int = 150,
@@ -127,7 +132,7 @@ def gibbs_sampling_time_sweep(
         )
 
         # Potential and gradient
-        V = model.potential(samples, t_tensor)
+        V = model(t_tensor, samples, y, return_potential=True)
         grad_V = torch.autograd.grad(
             V,
             samples,
@@ -151,7 +156,7 @@ def gibbs_sampling_time_sweep(
             samples += noise * noise_std.view(-1, 1, 1, 1)
 
     # Final clamp to valid image range
-    samples = samples.clamp(-1.0, 1.0)
+    # samples = samples.clamp(-1.0, 1.0)
     return samples.detach()
 
 
@@ -538,4 +543,36 @@ def ema(source, target, decay):
 def infiniteloop(dataloader):
     while True:
         for x, y in iter(dataloader):
-            yield x
+            yield x, y
+
+class HeatDataset(Dataset):
+    """
+    Custom Dataset for loading heat diffusion data.
+    Assumes data is stored in a numpy file.
+    """
+    def __init__(self, data_path, cond_path):
+        self.data = torch.from_numpy(np.load(data_path)).float()
+        self.cond = torch.from_numpy(np.load(cond_path)).float()
+        self._preprocess()
+    
+    def _preprocess(self):
+        m, std = self.data.mean(), self.data.std()
+        self.data = (self.data - m) / std
+        
+    def __len__(self):
+        return len(self.data)
+
+    def __getitem__(self, idx):
+        return self.data[idx], self.cond[idx] #
+    
+def get_batch(FM : ExactOptimalTransportConditionalFlowMatcher, x0 : torch.Tensor, x1 : torch.Tensor, y0 : torch.Tensor, y1: torch.Tensor, return_noise=False):
+    
+    if return_noise:
+        t, xt, ut, y0, y1, noise = FM.guided_sample_location_and_conditional_flow(x0, x1, y0, y1, return_noise=return_noise)
+    else:
+        t, xt, ut, y0, y1 = FM.guided_sample_location_and_conditional_flow(x0, x1, y0, y1, return_noise=return_noise)
+
+    if return_noise:
+        return t[..., None], xt, ut, y0, y1, noise
+    
+    return t[..., None], xt, ut, y0, y1
